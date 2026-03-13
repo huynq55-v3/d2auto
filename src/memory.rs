@@ -200,6 +200,7 @@ pub struct GameOffsets {
     pub unit_table: u64,
     pub ui: u64,
     pub hover: u64,
+    pub player_unit_ptr: u64,
 }
 
 impl GameOffsets {
@@ -222,6 +223,36 @@ impl GameOffsets {
             }
         }
         offsets
+    }
+
+    /// Hàm mới: Dùng UnitTable để tìm địa chỉ của nhân vật chính (Local Player)
+    pub fn find_player_unit(&mut self, reader: &MemoryReader, base_address: u64) -> bool {
+        if self.unit_table == 0 {
+            return false;
+        }
+
+        let unit_table_base = base_address + self.unit_table;
+
+        // Trong D2R, index 0 của UnitTable là Player Hash Table (gồm 128 pointers)
+        // Chúng ta cần tìm Unit nào là nhân vật của mình.
+        // Cách đơn giản nhất cho bot đơn luồng là lấy Unit đầu tiên trong bảng băm của Players.
+        for i in 0..128 {
+            let mut unit_ptr = reader.read_u64(unit_table_base + (i * 8)).unwrap_or(0);
+
+            while unit_ptr > 0 {
+                // Kiểm tra nếu là Player (Type 0)
+                let unit_type = reader.read_u32(unit_ptr).unwrap_or(99);
+                if unit_type == 0 {
+                    // Bạn có thể thêm logic kiểm tra UnitID hoặc Name ở đây
+                    // để đảm bảo đúng là nhân vật của bạn nếu chơi multiplayer
+                    self.player_unit_ptr = unit_ptr;
+                    return true;
+                }
+                // Nhảy tới Unit tiếp theo trong Linked List (Offset 0x150)
+                unit_ptr = reader.read_u64(unit_ptr + 0x150).unwrap_or(0);
+            }
+        }
+        false
     }
 }
 

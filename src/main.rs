@@ -78,11 +78,13 @@ fn main() {
         return;
     }
 
-    let offsets = GameOffsets::load_from_memory(&module_buffer);
+    let mut offsets = GameOffsets::load_from_memory(&module_buffer);
+    offsets.find_player_unit(&reader, base_addr);
 
     println!("[+] Đã tìm thấy các Offset chính:");
     println!("    - GameData:  0x{:X}", offsets.game_data);
     println!("    - UnitTable: 0x{:X}", offsets.unit_table);
+    println!("    - PlayerUnitPtr: 0x{:X}", offsets.player_unit_ptr);
 
     // 7. Game Loop
     println!("[+] Bắt đầu Game Loop (Tick Rate: 30 FPS)...");
