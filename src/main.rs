@@ -1,34 +1,23 @@
 mod memory;
+mod models;
 
-use memory::{find_pid_by_name, get_wine_base_address};
+use memory::{GameOffsets, MemoryReader, find_pid_by_name, get_wine_base_address};
+use models::PlayerInfo;
+use std::os::unix::fs::FileExt;
+use std::thread;
+use std::time::Duration;
 
 fn main() {
-    println!("--- D2R Linux Process Scanner ---");
+    println!("--- D2R Linux Memory Scanner & Parser ---");
 
-    // 1. Tìm PID của game (không phân biệt hoa thường)
+    // 1. Tìm PID của game
     let process_target = "d2r";
     println!("Đang tìm tiến trình có tên: {}...", process_target);
 
-    match find_pid_by_name(process_target) {
-        Some(pid) => {
-            println!("[+] Tìm thấy PID: {}", pid);
-
-            // 2. Tìm Base Address của module chính theo chữ ký 'MZ'
-            println!("Đang quét Base Address theo chữ ký 'MZ'...");
-
-            match get_wine_base_address(pid) {
-                Some(base_addr) => {
-                    println!("[SUCCESS] Tìm thấy Base Address: 0x{:X}", base_addr);
-                    println!(
-                        "Bạn đã sẵn sàng để thực hiện các bước tiếp theo (Đọc RAM, Quét Pattern)!"
-                    );
-                }
-                None => {
-                    println!(
-                        "[-] Không tìm thấy Base Address. Bạn đã chạy chương trình bằng 'sudo' chưa? Game đã thực sự chạy chưa?"
-                    );
-                }
-            }
+    let pid = match find_pid_by_name(process_target) {
+        Some(p) => {
+            println!("[+] Tìm thấy PID: {}", p);
+            p
         }
         None => {
             println!(
@@ -36,6 +25,65 @@ fn main() {
                 process_target
             );
             println!("Gợi ý: Hãy mở game lên trước khi chạy công cụ này.");
+            return;
         }
+    };
+
+    // 2. Tìm Base Address
+    println!("Đang quét Base Address theo chữ ký 'MZ'...");
+    let base_addr = match get_wine_base_address(pid) {
+        Some(addr) => {
+            println!("[SUCCESS] Tìm thấy Base Address: 0x{:X}", addr);
+            addr
+        }
+        None => {
+            println!("[-] Không tìm thấy Base Address. Bạn đã chạy chương trình bằng 'sudo' chưa?");
+            return;
+        }
+    };
+
+    // 3. Khởi tạo MemoryReader
+    let reader = match MemoryReader::new(pid) {
+        Ok(r) => r,
+        Err(e) => {
+            println!("[-] Lỗi mở RAM: {}. Hãy chạy bằng sudo.", e);
+            return;
+        }
+    };
+
+    // 4. Quét Game Offsets
+    println!("Đang quét các Offset của Game từ bộ nhớ...");
+    // SỬA LỖI 1: Tăng kích thước Buffer lên 40MB để chứa trọn vẹn .text section
+    println!("[*] Đang đọc 40MB RAM để quét Pattern...");
+    let mut module_buffer = vec![0u8; 40 * 1024 * 1024];
+    if let Err(e) = reader.mem_file.read_exact_at(&mut module_buffer, base_addr) {
+        println!("[-] Lỗi đọc RAM: {}", e);
+        return;
+    }
+
+    let offsets = GameOffsets::load_from_memory(&module_buffer);
+
+    println!("[+] Đã tìm thấy các Offset chính:");
+    println!("    - GameData:  0x{:X}", offsets.game_data);
+    println!("    - UnitTable: 0x{:X}", offsets.unit_table);
+
+    // 5. Game Loop
+    println!("[+] Bắt đầu Game Loop (Tick Rate: 30 FPS)...");
+    loop {
+        // Quét UnitTable để lấy danh sách Player hiện tại
+        let players = PlayerInfo::get_local_players(&reader, base_addr, offsets.unit_table);
+
+        for player in players {
+            // Chỉ in tọa độ nếu X, Y hợp lệ (nhân vật đã vào map)
+            if player.x > 0 && player.y > 0 {
+                println!(
+                    "Nhân vật (ID: {}) đang đứng tại: X = {}, Y = {}",
+                    player.id, player.x, player.y
+                );
+            }
+        }
+
+        // Ngủ 33ms (~30 FPS) để tránh tốn CPU
+        thread::sleep(Duration::from_millis(33));
     }
 }

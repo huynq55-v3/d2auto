@@ -1,6 +1,7 @@
 use std::convert::TryInto;
 use std::fs::{self, File};
 use std::io::{self, BufRead, Read, Seek, SeekFrom};
+use std::os::unix::fs::FileExt; // Cực kỳ quan trọng để đọc file tối ưu trên Linux
 
 /// Find PID by searching /proc/[pid]/comm and /proc/[pid]/cmdline
 pub fn find_pid_by_name(target_name: &str) -> Option<i32> {
@@ -112,14 +113,61 @@ pub fn get_wine_base_address(pid: i32) -> Option<u64> {
     None
 }
 
-// 1. Struct for extraction rules
-#[derive(Debug, Clone)]
-pub struct ExtractionRule {
-    pub add_offset: usize, // Offset from the start of the pattern match
-    pub read_size: usize,  // Number of bytes to read (4 for u32, 8 for u64)
+// ==========================================
+// 1. MODULE ĐỌC BỘ NHỚ (MEMORY READER)
+// ==========================================
+pub struct MemoryReader {
+    pub mem_file: File,
 }
 
-// 2. Struct for signatures
+impl MemoryReader {
+    pub fn new(pid: i32) -> Result<Self, std::io::Error> {
+        let mem_file = File::open(format!("/proc/{}/mem", pid))?;
+        Ok(Self { mem_file })
+    }
+
+    /// Hàm đọc tổng quát cho bất kỳ kiểu dữ liệu nào (Generic)
+    /// Điều này đáp ứng nguyên tắc DRY
+    pub fn read<T: Copy>(&self, address: u64) -> Option<T> {
+        let size = std::mem::size_of::<T>();
+        let mut buf = vec![0u8; size];
+
+        if self.mem_file.read_exact_at(&mut buf, address).is_ok() {
+            unsafe {
+                Some(std::ptr::read_unaligned(buf.as_ptr() as *const T))
+            }
+        } else {
+            None
+        }
+    }
+
+    // Các hàm helper nhanh cho các kiểu dữ liệu phổ biến
+    pub fn read_u64(&self, address: u64) -> Option<u64> {
+        self.read::<u64>(address)
+    }
+
+    pub fn read_u32(&self, address: u64) -> Option<u32> {
+        self.read::<u32>(address)
+    }
+
+    pub fn read_u16(&self, address: u64) -> Option<u16> {
+        self.read::<u16>(address)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ExtractMode {
+    Raw,                 // Không tính toán, offset = giá trị đọc được
+    RipRelative(isize),  // RIP-Relative = pattern_index + instruction_length + displacement
+}
+
+#[derive(Debug, Clone)]
+pub struct ExtractionRule {
+    pub add_offset: usize, // Vị trí đọc 4 bytes (tính từ đầu Pattern)
+    pub read_size: usize,
+    pub mode: ExtractMode, // Chọn thuật toán tương ứng
+}
+
 pub struct Signature<'a> {
     pub name: &'a str,
     pub pattern: &'a [u8],
@@ -142,140 +190,52 @@ impl<'a> Signature<'a> {
     }
 }
 
-// 3. Struct for game offsets
 #[derive(Debug, Default)]
 pub struct GameOffsets {
     pub game_data: u64,
     pub unit_table: u64,
     pub ui: u64,
-    pub hover: u64,
-    pub expansion: u64,
-    pub roster_offset: u64,
-    pub panel_manager_container_offset: u64,
-    pub widget_states_offset: u64,
-    pub waypoints_offset: u64,
-    pub fps: u64,
-    pub key_bindings_offset: u64,
-    pub key_bindings_skills_offset: u64,
-    pub tz: u64, // Terror Zones
-    pub quests: u64,
-    pub ping: u64,
-    pub legacy_graphics: u64,
 }
 
-// 4. SIGNATURES constant
+impl GameOffsets {
+    pub fn load_from_memory(module_memory: &[u8]) -> Self {
+        let mut offsets = Self::default();
+        for sig in SIGNATURES {
+            if let Some(val) = extract_offset(module_memory, sig) {
+                match sig.name {
+                    "GameData" => offsets.game_data = val,
+                    "UnitTable" => offsets.unit_table = val,
+                    "UI" => offsets.ui = val,
+                    _ => {}
+                }
+            }
+        }
+        offsets
+    }
+}
+
+// Khai báo chính xác 100% logic từ d2go/pkg/memory/offset.go
 pub const SIGNATURES: &[Signature] = &[
-    // GameData
     Signature {
         name: "GameData",
         pattern: b"\x44\x88\x25\x00\x00\x00\x00\x66\x44\x89\x25\x00\x00\x00\x00",
         mask: "xxx????xxxx????",
-        rule: ExtractionRule { add_offset: 3, read_size: 4 },
+        // D2go: (pattern - Base) - 0x121 + offsetInt
+        rule: ExtractionRule { add_offset: 3, read_size: 4, mode: ExtractMode::RipRelative(-0x121) },
     },
-    // UnitTable
     Signature {
         name: "UnitTable",
         pattern: b"\x48\x03\xC7\x49\x8B\x8C\xC6",
         mask: "xxxxxxx",
-        rule: ExtractionRule { add_offset: 7, read_size: 4 },
+        // D2go: unitTableOffset := offsetInt (Hoàn toàn thô)
+        rule: ExtractionRule { add_offset: 7, read_size: 4, mode: ExtractMode::Raw },
     },
-    // UI
     Signature {
         name: "UI",
         pattern: b"\x40\x84\xed\x0f\x94\x05",
         mask: "xxxxxx",
-        rule: ExtractionRule { add_offset: 6, read_size: 4 },
-    },
-    // Hover
-    Signature {
-        name: "Hover",
-        pattern: b"\xc6\x84\xc2\x00\x00\x00\x00\x00\x48\x8b\x74",
-        mask: "xxx?????xxx",
-        rule: ExtractionRule { add_offset: 3, read_size: 4 },
-    },
-    // Expansion
-    Signature {
-        name: "Expansion",
-        pattern: b"\x48\x8B\x05\x00\x00\x00\x00\x48\x8B\xD9\xF3\x0F\x10\x50\x00",
-        mask: "xxx????xxxxxxx?",
-        rule: ExtractionRule { add_offset: 3, read_size: 4 },
-    },
-    // RosterOffset
-    Signature {
-        name: "RosterOffset",
-        pattern: b"\x02\x45\x33\xD2\x4D\x8B",
-        mask: "xxxxxx",
-        rule: ExtractionRule { add_offset: 2, read_size: 4 }, // Placeholder rule, check d2go
-    },
-    // PanelManagerContainer
-    Signature {
-        name: "PanelManagerContainer",
-        pattern: b"\x48\x89\x05\x00\x00\x00\x00\x48\x85\xDB\x74\x1E",
-        mask: "xxx????xxxxx",
-        rule: ExtractionRule { add_offset: 3, read_size: 4 },
-    },
-    // WidgetStates
-    Signature {
-        name: "WidgetStates",
-        pattern: b"\x48\x8B\x0D\x00\x00\x00\x00\x4C\x8D\x44\x24\x00\x48\x03\xC2",
-        mask: "xxx????xxxx?xxx",
-        rule: ExtractionRule { add_offset: 3, read_size: 4 },
-    },
-    // Waypoints
-    Signature {
-        name: "Waypoints",
-        pattern: b"\x48\x89\x05\x00\x00\x00\x00\x0F\x11\x00",
-        mask: "xxx????xxx",
-        rule: ExtractionRule { add_offset: 3, read_size: 4 },
-    },
-    // FPS
-    Signature {
-        name: "FPS",
-        pattern: b"\x8B\x1D\x00\x00\x00\x00\x48\x8D\x05\x00\x00\x00\x00\x48\x8D\x4C\x24\x40",
-        mask: "xx????xxx????xxxxx",
-        rule: ExtractionRule { add_offset: 2, read_size: 4 },
-    },
-    // KeyBindings
-    Signature {
-        name: "KeyBindings",
-        pattern: b"\x48\x8D\x05\xAF\xEE",
-        mask: "xxxxx",
-        rule: ExtractionRule { add_offset: 3, read_size: 4 },
-    },
-    // KeyBindingsSkills
-    Signature {
-        name: "KeyBindingsSkills",
-        pattern: b"\x0F\x10\x04\x24\x48\x6B\xC8\x1C\x48\x8D\x05",
-        mask: "xxxxxxxxxxx",
-        rule: ExtractionRule { add_offset: 11, read_size: 4 },
-    },
-    // TerrorZones
-    Signature {
-        name: "TerrorZones",
-        pattern: b"\x48\x89\x05\xCC\xCC\xCC\xCC\x48\x8D\x05\xCC\xCC\xCC\xCC\x48\x89\x05\xCC\xCC\xCC\xCC\x48\x8D\x05\xCC\xCC\xCC\xCC\x48\x89\x15\xCC\xCC\xCC\xCC\x48\x89\x15",
-        mask: "xxx????xxx????xxx????xxx????xxx????xxx",
-        rule: ExtractionRule { add_offset: 3, read_size: 4 },
-    },
-    // Quests
-    Signature {
-        name: "Quests",
-        pattern: b"\x42\xc6\x84\x28\x00\x00\x00\x00\x00\x49\xff\xc5\x49\x83\xfd\x29",
-        mask: "xxxx?????xxxxxxx",
-        rule: ExtractionRule { add_offset: 4, read_size: 4 },
-    },
-    // Ping
-    Signature {
-        name: "Ping",
-        pattern: b"\x48\x8B\x0D\xCC\xCC\xCC\xCC\x49\x2B\xC7",
-        mask: "xxx????xxx",
-        rule: ExtractionRule { add_offset: 3, read_size: 4 },
-    },
-    // LegacyGraphics
-    Signature {
-        name: "LegacyGraphics",
-        pattern: b"\x80\x3D\x00\x00\x00\x00\x00\x48\x8D\x54\x24\x30",
-        mask: "xx?????xxxxx",
-        rule: ExtractionRule { add_offset: 2, read_size: 4 },
+        // D2go: pattern + 10 + offsetInt
+        rule: ExtractionRule { add_offset: 6, read_size: 4, mode: ExtractMode::RipRelative(10) },
     },
 ];
 
@@ -302,7 +262,6 @@ pub fn find_pattern(memory_buffer: &[u8], pattern: &[Option<u8>]) -> Option<usiz
     None
 }
 
-/// Generic offset extraction function
 pub fn extract_offset(module_memory: &[u8], sig: &Signature) -> Option<u64> {
     let compiled_pattern = sig.compile();
 
@@ -313,17 +272,21 @@ pub fn extract_offset(module_memory: &[u8], sig: &Signature) -> Option<u64> {
         if end_idx <= module_memory.len() {
             let bytes_slice = &module_memory[start_idx..end_idx];
 
-            match sig.rule.read_size {
-                4 => {
-                    let val_u32 = u32::from_le_bytes(bytes_slice.try_into().unwrap());
-                    return Some(val_u32 as u64);
+            let parsed_value: i64 = match sig.rule.read_size {
+                4 => i32::from_le_bytes(bytes_slice.try_into().unwrap()) as i64,
+                8 => i64::from_le_bytes(bytes_slice.try_into().unwrap()),
+                _ => return None,
+            };
+
+            // Ép kiểu dựa trên ExtractMode
+            match sig.rule.mode {
+                ExtractMode::Raw => {
+                    return Some(parsed_value as u64); // Lấy raw y xì
                 }
-                8 => {
-                    let val_u64 = u64::from_le_bytes(bytes_slice.try_into().unwrap());
-                    return Some(val_u64);
-                }
-                _ => {
-                    return None;
+                ExtractMode::RipRelative(instruction_len) => {
+                    // Địa chỉ = Vị trí tìm thấy + Chiều dài lệnh + Độ lệch
+                    let final_offset = pattern_index as i64 + instruction_len as i64 + parsed_value;
+                    return Some(final_offset as u64);
                 }
             }
         }
