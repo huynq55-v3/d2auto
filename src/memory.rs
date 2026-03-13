@@ -55,21 +55,13 @@ pub fn find_pid_by_name(target_name: &str) -> Option<i32> {
     None
 }
 
-pub fn get_wine_base_address(pid: i32) -> Option<u64> {
+pub fn get_wine_base_address(pid: i32) -> Option<(u64, usize)> {
     let maps_path = format!("/proc/{}/maps", pid);
-    let mem_path = format!("/proc/{}/mem", pid);
-
     let maps_file = File::open(maps_path).ok()?;
     let reader = std::io::BufReader::new(maps_file);
 
-    // Mở trực tiếp RAM của tiến trình (Yêu cầu sudo)
-    let mut mem_file = match File::open(&mem_path) {
-        Ok(f) => f,
-        Err(_) => {
-            println!("[-] Lỗi mở file mem. Bạn đã chạy chương trình bằng 'sudo' chưa?");
-            return None;
-        }
-    };
+    let mut base_start: Option<u64> = None;
+    let mut current_end: u64 = 0;
 
     for line in reader.lines().flatten() {
         let mut parts = line.split_whitespace();
@@ -84,25 +76,38 @@ pub fn get_wine_base_address(pid: i32) -> Option<u64> {
             None => continue,
         };
 
-        // CHỈ KIỂM TRA CHỮ 'r' Ở ĐẦU.
-        // Chấp nhận cả private ('p') lẫn shared ('s')
-        if !perms.starts_with('r') {
-            continue;
-        }
+        let mut addr_parts = addr_range.split('-');
+        let start_addr_str = match addr_parts.next() {
+            Some(s) => s,
+            None => continue,
+        };
+        let end_addr_str = match addr_parts.next() {
+            Some(e) => e,
+            None => continue,
+        };
 
-        if let Some(start_addr_str) = addr_range.split('-').next() {
-            if let Ok(base_addr) = u64::from_str_radix(start_addr_str, 16) {
-                // Nhảy đến địa chỉ bắt đầu của vùng nhớ này trong RAM
-                if mem_file.seek(SeekFrom::Start(base_addr)).is_ok() {
-                    let mut magic = [0u8; 2];
-
-                    // Đọc 2 byte đầu tiên
-                    if mem_file.read_exact(&mut magic).is_ok() {
-                        // Kiểm tra chữ ký MZ
-                        if &magic == b"MZ" {
-                            // 0x140000000 là địa chỉ tĩnh kinh điển của D2R 64-bit
-                            if base_addr == 0x140000000 || base_addr == 0x400000 {
-                                return Some(base_addr);
+        if let (Ok(start), Ok(end)) = (
+            u64::from_str_radix(start_addr_str, 16),
+            u64::from_str_radix(end_addr_str, 16),
+        ) {
+            if let Some(s_found) = base_start {
+                // Nếu vùng nhớ này liên kết trực tiếp với vùng trước đó, cộng dồn size
+                if start == current_end {
+                    current_end = end;
+                } else {
+                    // Hết các vùng nhớ liên tiếp của module
+                    break;
+                }
+            } else {
+                // Tìm Base Address bằng chữ ký MZ
+                if (start == 0x140000000 || start == 0x400000) && perms.starts_with('r') {
+                    let mem_path = format!("/proc/{}/mem", pid);
+                    if let Ok(mut mem_file) = File::open(&mem_path) {
+                        if mem_file.seek(SeekFrom::Start(start)).is_ok() {
+                            let mut magic = [0u8; 2];
+                            if mem_file.read_exact(&mut magic).is_ok() && &magic == b"MZ" {
+                                base_start = Some(start);
+                                current_end = end;
                             }
                         }
                     }
@@ -110,7 +115,8 @@ pub fn get_wine_base_address(pid: i32) -> Option<u64> {
             }
         }
     }
-    None
+
+    base_start.map(|start| (start, (current_end - start) as usize))
 }
 
 // ==========================================

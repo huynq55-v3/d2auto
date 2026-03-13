@@ -31,10 +31,14 @@ fn main() {
 
     // 2. Tìm Base Address
     println!("Đang quét Base Address theo chữ ký 'MZ'...");
-    let base_addr = match get_wine_base_address(pid) {
-        Some(addr) => {
-            println!("[SUCCESS] Tìm thấy Base Address: 0x{:X}", addr);
-            addr
+    let (base_addr, base_size) = match get_wine_base_address(pid) {
+        Some((addr, size)) => {
+            println!(
+                "[SUCCESS] Tìm thấy Base Address: 0x{:X} (Size: {} MB)",
+                addr,
+                size / 1024 / 1024
+            );
+            (addr, size)
         }
         None => {
             println!("[-] Không tìm thấy Base Address. Bạn đã chạy chương trình bằng 'sudo' chưa?");
@@ -53,9 +57,9 @@ fn main() {
 
     // 4. Quét Game Offsets
     println!("Đang quét các Offset của Game từ bộ nhớ...");
-    // SỬA LỖI 1: Tăng kích thước Buffer lên 40MB để chứa trọn vẹn .text section
-    println!("[*] Đang đọc 40MB RAM để quét Pattern...");
-    let mut module_buffer = vec![0u8; 40 * 1024 * 1024];
+    // Tự động sử dụng kích thước vùng nhớ đã detect
+    println!("[*] Đang đọc {} MB RAM để quét Pattern...", base_size / 1024 / 1024);
+    let mut module_buffer = vec![0u8; base_size];
     if let Err(e) = reader.mem_file.read_exact_at(&mut module_buffer, base_addr) {
         println!("[-] Lỗi đọc RAM: {}", e);
         return;
