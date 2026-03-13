@@ -1,6 +1,6 @@
 use std::convert::TryInto;
-use std::fs::{self, File};
-use std::io::{self, BufRead, Read, Seek, SeekFrom};
+use std::fs::File;
+use std::io::{BufRead, Read, Seek, SeekFrom};
 use std::os::unix::fs::FileExt; // Cực kỳ quan trọng để đọc file tối ưu trên Linux
 
 /// Find PID by searching /proc/[pid]/comm and /proc/[pid]/cmdline
@@ -90,7 +90,7 @@ pub fn get_wine_base_address(pid: i32) -> Option<(u64, usize)> {
             u64::from_str_radix(start_addr_str, 16),
             u64::from_str_radix(end_addr_str, 16),
         ) {
-            if let Some(s_found) = base_start {
+            if let Some(_s_found) = base_start {
                 // Nếu vùng nhớ này liên kết trực tiếp với vùng trước đó, cộng dồn size
                 if start == current_end {
                     current_end = end;
@@ -139,9 +139,7 @@ impl MemoryReader {
         let mut buf = vec![0u8; size];
 
         if self.mem_file.read_exact_at(&mut buf, address).is_ok() {
-            unsafe {
-                Some(std::ptr::read_unaligned(buf.as_ptr() as *const T))
-            }
+            unsafe { Some(std::ptr::read_unaligned(buf.as_ptr() as *const T)) }
         } else {
             None
         }
@@ -163,8 +161,8 @@ impl MemoryReader {
 
 #[derive(Debug, Clone)]
 pub enum ExtractMode {
-    Raw,                 // Không tính toán, offset = giá trị đọc được
-    RipRelative(isize),  // RIP-Relative = pattern_index + instruction_length + displacement
+    Raw,                // Không tính toán, offset = giá trị đọc được
+    RipRelative(isize), // RIP-Relative = pattern_index + instruction_length + displacement
 }
 
 #[derive(Debug, Clone)]
@@ -201,6 +199,7 @@ pub struct GameOffsets {
     pub game_data: u64,
     pub unit_table: u64,
     pub ui: u64,
+    pub hover: u64,
 }
 
 impl GameOffsets {
@@ -212,6 +211,12 @@ impl GameOffsets {
                     "GameData" => offsets.game_data = val,
                     "UnitTable" => offsets.unit_table = val,
                     "UI" => offsets.ui = val,
+                    "Hover" => {
+                        // Áp dụng logic của d2go: đọc giá trị rồi trừ 1
+                        if val > 0 {
+                            offsets.hover = val - 1;
+                        }
+                    }
                     _ => {}
                 }
             }
@@ -227,21 +232,43 @@ pub const SIGNATURES: &[Signature] = &[
         pattern: b"\x44\x88\x25\x00\x00\x00\x00\x66\x44\x89\x25\x00\x00\x00\x00",
         mask: "xxx????xxxx????",
         // D2go: (pattern - Base) - 0x121 + offsetInt
-        rule: ExtractionRule { add_offset: 3, read_size: 4, mode: ExtractMode::RipRelative(-0x121) },
+        rule: ExtractionRule {
+            add_offset: 3,
+            read_size: 4,
+            mode: ExtractMode::RipRelative(-0x121),
+        },
     },
     Signature {
         name: "UnitTable",
         pattern: b"\x48\x03\xC7\x49\x8B\x8C\xC6",
         mask: "xxxxxxx",
         // D2go: unitTableOffset := offsetInt (Hoàn toàn thô)
-        rule: ExtractionRule { add_offset: 7, read_size: 4, mode: ExtractMode::Raw },
+        rule: ExtractionRule {
+            add_offset: 7,
+            read_size: 4,
+            mode: ExtractMode::Raw,
+        },
     },
     Signature {
         name: "UI",
         pattern: b"\x40\x84\xed\x0f\x94\x05",
         mask: "xxxxxx",
         // D2go: pattern + 10 + offsetInt
-        rule: ExtractionRule { add_offset: 6, read_size: 4, mode: ExtractMode::RipRelative(10) },
+        rule: ExtractionRule {
+            add_offset: 6,
+            read_size: 4,
+            mode: ExtractMode::RipRelative(10),
+        },
+    },
+    Signature {
+        name: "Hover",
+        pattern: b"\xc6\x84\xc2\x00\x00\x00\x00\x00\x48\x8b\x74",
+        mask: "xxx?????xxx",
+        rule: ExtractionRule {
+            add_offset: 3,
+            read_size: 4,
+            mode: ExtractMode::Raw,
+        },
     },
 ];
 

@@ -1,3 +1,4 @@
+mod input;
 mod memory;
 mod models;
 
@@ -29,7 +30,7 @@ fn main() {
         }
     };
 
-    // 2. Tìm Base Address
+    // 3. Tìm Base Address
     println!("Đang quét Base Address theo chữ ký 'MZ'...");
     let (base_addr, base_size) = match get_wine_base_address(pid) {
         Some((addr, size)) => {
@@ -46,7 +47,7 @@ fn main() {
         }
     };
 
-    // 3. Khởi tạo MemoryReader
+    // 4. Khởi tạo MemoryReader
     let reader = match MemoryReader::new(pid) {
         Ok(r) => r,
         Err(e) => {
@@ -55,10 +56,22 @@ fn main() {
         }
     };
 
-    // 4. Quét Game Offsets
+    // 5. Khởi tạo InputController (X11 Native)
+    println!("Đang kết nối tới X Server và tìm cửa sổ game...");
+    let mut input = match input::InputController::new("Diablo II") {
+        Ok(i) => i,
+        Err(e) => {
+            println!("[-] Lỗi khởi tạo Input: {}", e);
+            return;
+        }
+    };
+
+    // 6. Quét Game Offsets
     println!("Đang quét các Offset của Game từ bộ nhớ...");
-    // Tự động sử dụng kích thước vùng nhớ đã detect
-    println!("[*] Đang đọc {} MB RAM để quét Pattern...", base_size / 1024 / 1024);
+    println!(
+        "[*] Đang đọc {} MB RAM để quét Pattern...",
+        base_size / 1024 / 1024
+    );
     let mut module_buffer = vec![0u8; base_size];
     if let Err(e) = reader.mem_file.read_exact_at(&mut module_buffer, base_addr) {
         println!("[-] Lỗi đọc RAM: {}", e);
@@ -71,14 +84,12 @@ fn main() {
     println!("    - GameData:  0x{:X}", offsets.game_data);
     println!("    - UnitTable: 0x{:X}", offsets.unit_table);
 
-    // 5. Game Loop
+    // 7. Game Loop
     println!("[+] Bắt đầu Game Loop (Tick Rate: 30 FPS)...");
     loop {
-        // Quét UnitTable để lấy danh sách Player hiện tại
         let players = PlayerInfo::get_local_players(&reader, base_addr, offsets.unit_table);
 
         for player in players {
-            // Chỉ in tọa độ nếu X, Y hợp lệ (nhân vật đã vào map)
             if player.x > 0 && player.y > 0 {
                 println!(
                     "Nhân vật (ID: {}) đang đứng tại: X = {}, Y = {}",
@@ -87,7 +98,6 @@ fn main() {
             }
         }
 
-        // Ngủ 33ms (~30 FPS) để tránh tốn CPU
         thread::sleep(Duration::from_millis(33));
     }
 }
