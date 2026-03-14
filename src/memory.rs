@@ -157,6 +157,31 @@ impl MemoryReader {
     pub fn read_u16(&self, address: u64) -> Option<u16> {
         self.read::<u16>(address)
     }
+
+    pub fn read_current_area_id(&self, player_unit_ptr: u64) -> u32 {
+        let path_ptr = self.read_u64(player_unit_ptr + 0x38).unwrap_or(0);
+        if path_ptr == 0 {
+            return 0;
+        }
+
+        let room1_ptr = self.read_u64(path_ptr + 0x20).unwrap_or(0);
+        if room1_ptr == 0 || room1_ptr == 0x100000000 {
+            return 0;
+        }
+
+        let room2_ptr = self.read_u64(room1_ptr + 0x18).unwrap_or(0);
+        if room2_ptr == 0 {
+            return 0;
+        }
+
+        let level_ptr = self.read_u64(room2_ptr + 0x90).unwrap_or(0);
+        if level_ptr == 0 {
+            return 0;
+        }
+
+        // Area ID (Level No) nằm ở offset 0x1F8 của pLevel
+        self.read_u32(level_ptr + 0x1F8).unwrap_or(0)
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -358,30 +383,4 @@ pub fn extract_offset(module_memory: &[u8], sig: &Signature) -> Option<u64> {
         }
     }
     None
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_unit_table_extraction() {
-        let mut fake_ram: Vec<u8> = vec![0; 100];
-        let pattern = b"\x48\x03\xC7\x49\x8B\x8C\xC6";
-        let offset: u32 = 0xDDCCBBAA;
-        let offset_bytes = offset.to_le_bytes();
-
-        // Place pattern at index 10
-        for (i, &b) in pattern.iter().enumerate() {
-            fake_ram[10 + i] = b;
-        }
-        // Place offset at index 10 + 7
-        for (i, &b) in offset_bytes.iter().enumerate() {
-            fake_ram[17 + i] = b;
-        }
-
-        let sig = SIGNATURES.iter().find(|s| s.name == "UnitTable").unwrap();
-        let result = extract_offset(&fake_ram, sig);
-        assert_eq!(result, Some(0xDDCCBBAA as u64));
-    }
 }

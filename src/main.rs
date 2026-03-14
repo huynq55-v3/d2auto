@@ -2,107 +2,72 @@ mod astar;
 mod input;
 mod map;
 mod memory;
-mod scripting;
-mod seed;
+mod moving;
 
-use map::{AreaManager, GameTopology};
+use device_query::{DeviceQuery, DeviceState, Keycode};
 use memory::{GameOffsets, MemoryReader, find_pid_by_name, get_wine_base_address};
-use scripting::{BotEngine, ScriptParser};
 use std::thread;
 use std::time::Duration;
 
 fn main() {
-    println!("--- D2R Linux Memory Scanner & Parser ---");
+    println!("--- D2R Linux Bot Controller ---");
+    println!("[HOTKEY] Bấm F7 để TẠM DỪNG / TIẾP TỤC Bot.");
 
-    // 1. Tìm PID của game
+    // 1. Tìm PID & Base Address (Giữ nguyên logic của bạn)
     let process_target = "d2r";
-    println!("Đang tìm tiến trình có tên: {}...", process_target);
+    let pid = find_pid_by_name(process_target).expect("Không tìm thấy game d2r");
+    let (base_addr, base_size) = get_wine_base_address(pid).expect("Không tìm thấy Base Address");
+    let reader = MemoryReader::new(pid).expect("Lỗi mở RAM");
+    let mut input = input::InputController::new("Diablo II").expect("Lỗi khởi tạo Input");
 
-    let pid = match find_pid_by_name(process_target) {
-        Some(p) => {
-            println!("[+] Tìm thấy PID: {}", p);
-            p
-        }
-        None => {
-            println!(
-                "[-] Không tìm thấy tiến trình nào chứa từ khóa: '{}'",
-                process_target
-            );
-            println!("Gợi ý: Hãy mở game lên trước khi chạy công cụ này.");
-            return;
-        }
-    };
-
-    // 3. Tìm Base Address
-    println!("Đang quét Base Address theo chữ ký 'MZ'...");
-    let (base_addr, base_size) = match get_wine_base_address(pid) {
-        Some((addr, size)) => {
-            println!(
-                "[SUCCESS] Tìm thấy Base Address: 0x{:X} (Size: {} MB)",
-                addr,
-                size / 1024 / 1024
-            );
-            (addr, size)
-        }
-        None => {
-            println!("[-] Không tìm thấy Base Address. Bạn đã chạy chương trình bằng 'sudo' chưa?");
-            return;
-        }
-    };
-
-    // 4. Khởi tạo MemoryReader
-    let reader = match MemoryReader::new(pid) {
-        Ok(r) => r,
-        Err(e) => {
-            println!("[-] Lỗi mở RAM: {}. Hãy chạy bằng sudo.", e);
-            return;
-        }
-    };
-
-    // 5. Khởi tạo InputController (X11 Native)
-    println!("Đang kết nối tới X Server và tìm cửa sổ game...");
-    let mut input = match input::InputController::new("Diablo II") {
-        Ok(i) => i,
-        Err(e) => {
-            println!("[-] Lỗi khởi tạo Input: {}", e);
-            return;
-        }
-    };
-
-    // 6. Quét Game Offsets
-    println!("Đang quét các Offset của Game từ bộ nhớ...");
+    // 2. Quét Offsets
     let mut module_buffer = vec![0u8; base_size];
     use std::os::unix::fs::FileExt;
-    if let Err(e) = reader.mem_file.read_exact_at(&mut module_buffer, base_addr) {
-        println!("[-] Lỗi đọc RAM: {}", e);
-        return;
-    }
-
+    reader
+        .mem_file
+        .read_exact_at(&mut module_buffer, base_addr)
+        .ok();
     let mut offsets = GameOffsets::load_from_memory(&module_buffer);
     offsets.find_player_unit(&reader, base_addr);
 
-    println!("[+] Đã tìm thấy các Offset chính:");
-    println!("    - UnitTable: 0x{:X}", offsets.unit_table);
-    println!("    - PlayerUnitPtr: 0x{:X}", offsets.player_unit_ptr);
-    println!("    - GameData: 0x{:X}", offsets.game_data);
+    // 4. Trạng thái điều khiển
+    let device_state = DeviceState::new();
+    let mut is_bot_enabled = false; // Mặc định vào game chưa chạy ngay
+    let mut last_f7_state = false;
 
-    let current_map_seed = seed::read_seed_from_memory(&reader, offsets.player_unit_ptr);
-    println!("    - Current Map Seed: {}", current_map_seed.unwrap());
+    println!("[+] Bot đã sẵn sàng. Bấm F7 để bắt đầu.");
 
-    // 7. Khởi tạo Bot Components
-    let mut area_manager = AreaManager::new();
-    let topology = GameTopology::new();
-    let mut engine = BotEngine::new();
-    let parser = ScriptParser::new();
+    // hardcode den of evil door position
+    let (den_of_evil_x, den_of_evil_y) = (5215, 5940);
 
-    // Nạp script mặc định: Đến Den of Evil
-    let script = "go to den of evil";
-    let commands = parser.parse_script(script);
-    engine.load_script(commands);
-
-    // 8. Game Loop
-    println!("[+] Bắt đầu Game Loop (Bot Active)...");
+    // 5. Game Loop
     loop {
-        thread::sleep(Duration::from_millis(100)); // Sleep để chuột không giật lag
+        // --- KIỂM TRA PHÍM F7 (TOGGLE) ---
+        let keys = device_state.get_keys();
+        let f7_pressed = keys.contains(&Keycode::F7);
+
+        if f7_pressed && !last_f7_state {
+            is_bot_enabled = !is_bot_enabled;
+            if is_bot_enabled {
+                println!("\x1b[32m[STATUS] BOT: RUNNING\x1b[0m"); // In màu xanh
+            } else {
+                println!("\x1b[31m[STATUS] BOT: PAUSED\x1b[0m"); // In màu đỏ
+            }
+        }
+        last_f7_state = f7_pressed;
+
+        if is_bot_enabled {
+            let player_ptr = offsets.player_unit_ptr;
+
+            let path_ptr = reader.read_u64(player_ptr + 0x38).unwrap_or(0);
+
+            let player_x = reader.read_u16(path_ptr + 0x02).unwrap_or(0) as i32;
+            let player_y = reader.read_u16(path_ptr + 0x06).unwrap_or(0) as i32;
+
+            println!("Player Position: ({}, {})", player_x, player_y);
+        }
+
+        // Tần số quét 25ms/lần (40 FPS cho não Bot)
+        thread::sleep(Duration::from_millis(25));
     }
 }

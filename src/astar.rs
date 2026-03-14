@@ -1,5 +1,5 @@
-use std::collections::{BinaryHeap, HashMap};
 use std::cmp::Ordering;
+use std::collections::{BinaryHeap, HashMap};
 
 #[derive(Copy, Clone, Eq, PartialEq)]
 struct State {
@@ -7,10 +7,11 @@ struct State {
     position: (i32, i32),
 }
 
-// Rust yêu cầu implement Ord lộn ngược để tạo Min-Heap (ưu tiên cost nhỏ nhất)
 impl Ord for State {
     fn cmp(&self, other: &Self) -> Ordering {
-        other.cost.cmp(&self.cost)
+        other
+            .cost
+            .cmp(&self.cost)
             .then_with(|| self.position.cmp(&other.position))
     }
 }
@@ -32,21 +33,24 @@ pub fn find_path(
     let mut g_score: HashMap<(i32, i32), i32> = HashMap::new();
 
     g_score.insert(start, 0);
-    
-    // Heuristic: Khoảng cách Diagonal (Chebyshev distance) phù hợp với di chuyển 8 hướng của D2
-    let heuristic = |p: (i32, i32), g: (i32, i32)| -> i32 {
-        (p.0 - g.0).abs().max((p.1 - g.1).abs()) * 10
-    };
+
+    let heuristic =
+        |p: (i32, i32), g: (i32, i32)| -> i32 { (p.0 - g.0).abs().max((p.1 - g.1).abs()) * 10 };
 
     open_set.push(State {
         cost: heuristic(start, goal),
         position: start,
     });
 
-    // Các hướng di chuyển (8 hướng)
     let directions = [
-        (0, 1), (1, 0), (0, -1), (-1, 0), // Lên, xuống, trái, phải (Cost 10)
-        (1, 1), (1, -1), (-1, 1), (-1, -1) // Chéo (Cost 14 - xấp xỉ căn 2)
+        (0, 1),
+        (1, 0),
+        (0, -1),
+        (-1, 0),
+        (1, 1),
+        (1, -1),
+        (-1, 1),
+        (-1, -1),
     ];
 
     while let Some(State { position, .. }) = open_set.pop() {
@@ -57,7 +61,9 @@ pub fn find_path(
             while let Some(&prev) = came_from.get(&current) {
                 path.push(prev);
                 current = prev;
-                if current == start { break; }
+                if current == start {
+                    break;
+                }
             }
             path.reverse();
             return Some(path);
@@ -78,7 +84,7 @@ pub fn find_path(
                     if tentative_g < neighbor_g {
                         came_from.insert(neighbor, position);
                         g_score.insert(neighbor, tentative_g);
-                        
+
                         let f_score = tentative_g + heuristic(neighbor, goal);
                         open_set.push(State {
                             cost: f_score,
