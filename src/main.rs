@@ -1,11 +1,11 @@
 mod astar;
 mod input;
+mod map;
 mod memory;
-mod models;
 mod scripting;
 
+use map::{AreaManager, GameTopology};
 use memory::{GameOffsets, MemoryReader, find_pid_by_name, get_wine_base_address};
-use models::{AreaManager, GameTopology};
 use scripting::{BotEngine, ScriptParser};
 use std::thread;
 use std::time::Duration;
@@ -81,7 +81,6 @@ fn main() {
     offsets.find_player_unit(&reader, base_addr);
 
     println!("[+] Đã tìm thấy các Offset chính:");
-    println!("    - GameData:  0x{:X}", offsets.game_data);
     println!("    - UnitTable: 0x{:X}", offsets.unit_table);
     println!("    - PlayerUnitPtr: 0x{:X}", offsets.player_unit_ptr);
 
@@ -107,25 +106,7 @@ fn main() {
                 let player_x = reader.read_u16(path_ptr + 0x02).unwrap_or(0) as i32;
                 let player_y = reader.read_u16(path_ptr + 0x06).unwrap_or(0) as i32;
 
-                // Lấy Area ID hiện tại
-                // Tạm thời lấy giá trị từ RAM (Cần offset chính xác, giả sử nằm trong Unit hoặc Act)
-                // Trong thực tế bạn cần offset AreaID từ Act hoặc player unit.
-                // Giả sử lấy từ AreaManager cập nhật.
-
-                // 1. ĐÔI MẮT: Hút bụi và vẽ map xung quanh nhân vật
-                let current_area_id = 1; // Mặc định là Rogue Encampment để test hoặc lấy từ RAM
-                area_manager.update(&reader, player_unit_ptr, current_area_id);
-
-                // 2. NÃO BỘ: Chạy State Machine để quyết định bước đi
-                engine.tick(
-                    &reader,
-                    &mut input,
-                    &mut area_manager,
-                    &topology,
-                    current_area_id,
-                    player_x,
-                    player_y,
-                );
+                println!("[DEBUG-MEM] Player X: {}, Player Y: {}", player_x, player_y);
             }
         }
 

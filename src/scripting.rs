@@ -1,7 +1,7 @@
 use crate::astar;
 use crate::input::InputController;
+use crate::map::{AreaManager, GameTopology};
 use crate::memory::MemoryReader;
-use crate::models::{AreaManager, GameTopology};
 use std::collections::{HashMap, VecDeque};
 
 #[derive(Debug, Clone, PartialEq)]
@@ -126,13 +126,18 @@ impl BotEngine {
 
             // IN DEBUG ĐỂ KIỂM TRA LƯỚI VA CHẠM
             if current_area.grid.is_empty() {
-                println!("[SM-CẢNH BÁO] Grid của Area {} đang trống! Bạn đã gọi area_manager.update() chưa?", current_area_id);
+                println!(
+                    "[SM-CẢNH BÁO] Grid của Area {} đang trống! Bạn đã gọi area_manager.update() chưa?",
+                    current_area_id
+                );
                 return;
             }
 
             // LỖI 1 ĐƯỢC SỬA Ở ĐÂY: Lấy trạm dừng chân tiếp theo
             // VD: Route là [1, 2, 8]. Đang ở 1 -> Next là 2.
-            let next_area = self.macro_route.iter()
+            let next_area = self
+                .macro_route
+                .iter()
                 .skip_while(|&&a| a != current_area_id)
                 .nth(1) // Lấy phần tử ngay sau current_area_id
                 .cloned()
@@ -142,28 +147,42 @@ impl BotEngine {
             let target_door_pos = self.find_door_to_area(reader, next_area);
 
             let target_tile = if let Some(door_pos) = target_door_pos {
-                println!("[SM] Radar phát hiện lối sang Area {} tại {:?}", next_area, door_pos);
+                println!(
+                    "[SM] Radar phát hiện lối sang Area {} tại {:?}",
+                    next_area, door_pos
+                );
                 door_pos
             } else {
                 if let Some(frontier) = current_area.find_closest_frontier(player_x, player_y) {
                     println!("[SM] Đang chạy ra mép sương mù tại {:?}", frontier);
                     frontier
                 } else {
-                    println!("[SM] Kẹt! Đã quét {} ô map nhưng không thấy cửa sang Area {}.", current_area.grid.len(), next_area);
+                    println!(
+                        "[SM] Kẹt! Đã quét {} ô map nhưng không thấy cửa sang Area {}.",
+                        current_area.grid.len(),
+                        next_area
+                    );
                     self.state = BotState::Idle;
                     return;
                 }
             };
 
             // Tìm đường A*
-            if let Some(path) = astar::find_path(&current_area.grid, (player_x, player_y), target_tile) {
+            if let Some(path) =
+                astar::find_path(&current_area.grid, (player_x, player_y), target_tile)
+            {
                 if path.len() > 1 {
                     let step_index = usize::min(path.len() - 1, 3);
                     let next_step = path[step_index];
-                    input.click_to_move(player_x, player_y, next_step.0, next_step.1).ok();
+                    input
+                        .click_to_move(player_x, player_y, next_step.0, next_step.1)
+                        .ok();
                 }
             } else {
-                println!("[SM] A* báo lỗi: Không có đường vật lý tới {:?}", target_tile);
+                println!(
+                    "[SM] A* báo lỗi: Không có đường vật lý tới {:?}",
+                    target_tile
+                );
             }
         }
     }

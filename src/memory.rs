@@ -196,11 +196,9 @@ impl<'a> Signature<'a> {
 
 #[derive(Debug, Default)]
 pub struct GameOffsets {
-    pub game_data: u64,
     pub unit_table: u64,
-    pub ui: u64,
-    pub hover: u64,
     pub player_unit_ptr: u64,
+    pub game_data: u64,
 }
 
 impl GameOffsets {
@@ -209,15 +207,8 @@ impl GameOffsets {
         for sig in SIGNATURES {
             if let Some(val) = extract_offset(module_memory, sig) {
                 match sig.name {
-                    "GameData" => offsets.game_data = val,
                     "UnitTable" => offsets.unit_table = val,
-                    "UI" => offsets.ui = val,
-                    "Hover" => {
-                        // Áp dụng logic của d2go: đọc giá trị rồi trừ 1
-                        if val > 0 {
-                            offsets.hover = val - 1;
-                        }
-                    }
+                    "GameData" => offsets.game_data = val,
                     _ => {}
                 }
             }
@@ -254,8 +245,6 @@ impl GameOffsets {
                     // Điều kiện kiện kiên quyết để là 1 Player hợp lệ:
                     // Class từ 0-6 VÀ phải có Path VÀ phải có Inventory
                     if txt_file_no <= 6 && path_ptr > 0 && inv_ptr > 0 {
-                        println!("Path Pointer: 0x{:X}", path_ptr);
-                        println!("Unit Pointer: 0x{:X}", unit_ptr);
                         self.player_unit_ptr = unit_ptr;
                         return true;
                     }
