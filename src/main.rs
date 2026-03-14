@@ -3,6 +3,7 @@ mod input;
 mod map;
 mod memory;
 mod scripting;
+mod seed;
 
 use map::{AreaManager, GameTopology};
 use memory::{GameOffsets, MemoryReader, find_pid_by_name, get_wine_base_address};
@@ -83,6 +84,10 @@ fn main() {
     println!("[+] Đã tìm thấy các Offset chính:");
     println!("    - UnitTable: 0x{:X}", offsets.unit_table);
     println!("    - PlayerUnitPtr: 0x{:X}", offsets.player_unit_ptr);
+    println!("    - GameData: 0x{:X}", offsets.game_data);
+
+    let current_map_seed = seed::read_seed_from_memory(&reader, offsets.player_unit_ptr);
+    println!("    - Current Map Seed: {}", current_map_seed.unwrap());
 
     // 7. Khởi tạo Bot Components
     let mut area_manager = AreaManager::new();
@@ -98,18 +103,6 @@ fn main() {
     // 8. Game Loop
     println!("[+] Bắt đầu Game Loop (Bot Active)...");
     loop {
-        // Đọc thông tin Player Unit hiện tại
-        let player_unit_ptr = offsets.player_unit_ptr;
-        if player_unit_ptr != 0 {
-            let path_ptr = reader.read_u64(player_unit_ptr + 0x38).unwrap_or(0);
-            if path_ptr != 0 {
-                let player_x = reader.read_u16(path_ptr + 0x02).unwrap_or(0) as i32;
-                let player_y = reader.read_u16(path_ptr + 0x06).unwrap_or(0) as i32;
-
-                println!("[DEBUG-MEM] Player X: {}, Player Y: {}", player_x, player_y);
-            }
-        }
-
         thread::sleep(Duration::from_millis(100)); // Sleep để chuột không giật lag
     }
 }

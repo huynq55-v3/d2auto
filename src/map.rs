@@ -1,6 +1,24 @@
-use std::collections::{HashMap, HashSet, VecDeque};
+use reqwest::blocking::Client;
+use std::collections::{HashMap, VecDeque};
 
-use crate::memory::MemoryReader;
+use serde::Deserialize;
+
+#[derive(Debug, Deserialize)]
+pub struct Point {
+    pub x: i32,
+    pub y: i32,
+}
+
+// Dùng rename_all để Rust tự map chữ "levelOrigin" thành "level_origin"
+#[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct MapDataJSON {
+    pub level_origin: Point,
+    pub map_rows: Vec<Vec<i32>>,
+    // (Tùy chọn) Nếu JSON API của bạn có trả về lối đi (warps) hoặc NPC,
+    // bạn có thể thêm Option để hứng, nếu không có nó sẽ tự bỏ qua.
+    // pub adjacent_levels: Option<Vec<ExitJSON>>,
+}
 
 // ==========================================
 // 2. DATA STRUCTURES (OBJECTS CÓ Ý NGHĨA)
@@ -58,67 +76,11 @@ impl GameTopology {
 }
 
 // ==========================================
-// 1. CẤU TRÚC ROOM
-// ==========================================
-#[derive(Debug, Clone)]
-pub struct Room {
-    pub ptr: u64,           // Địa chỉ Room1 trong RAM (để dùng cho quét lân cận)
-    pub x: i32,             // room_x * 5
-    pub y: i32,             // room_y * 5
-    pub width: i32,         // room_width * 5
-    pub height: i32,        // room_height * 5
-    pub collision_ptr: u64, // p_collision_grid
-    pub area_id: u32,       // ID khu vực (rất quan trọng để chống đi lạc)
-}
-
-impl Room {
-    pub fn from_reader(reader: &MemoryReader, room1_ptr: u64) -> Option<Self> {
-        if room1_ptr == 0 {
-            return None;
-        }
-
-        let rx = reader.read_u32(room1_ptr + 0x1E0)? as i32;
-        let ry = reader.read_u32(room1_ptr + 0x1E4)? as i32;
-        let rw = reader.read_u32(room1_ptr + 0x1E8)? as i32;
-        let rh = reader.read_u32(room1_ptr + 0x1EC)? as i32;
-
-        let room2_ptr = reader.read_u64(room1_ptr + 0x18)?;
-        let col_grid = reader.read_u64(room2_ptr + 0xA8)?;
-
-        Some(Room {
-            ptr: room1_ptr,
-            x: rx * 5,
-            y: ry * 5,
-            width: rw * 5,
-            height: rh * 5,
-            collision_ptr: col_grid,
-            area_id: 0,
-        })
-    }
-
-    pub fn get_neighbor_pointers(&self, reader: &MemoryReader) -> Vec<u64> {
-        let mut ptrs = Vec::new();
-        let p_rooms_near = reader.read_u64(self.ptr + 0x78).unwrap_or(0);
-        let count = reader.read_u32(self.ptr + 0x80).unwrap_or(0);
-
-        for i in 0..count {
-            if let Some(ptr) = reader.read_u64(p_rooms_near + (i as u64 * 8)) {
-                if ptr != 0 {
-                    ptrs.push(ptr);
-                }
-            }
-        }
-        ptrs
-    }
-}
-
-// ==========================================
 // 2. CẤU TRÚC AREA (Khu vực)
 // ==========================================
 pub struct Area {
     pub id: u32,
     pub name: String,
-    pub scanned_rooms: HashSet<u64>,
     pub grid: HashMap<(i32, i32), bool>,
 }
 
@@ -127,69 +89,7 @@ impl Area {
         Self {
             id,
             name: name.to_string(),
-            scanned_rooms: HashSet::new(),
             grid: HashMap::new(),
-        }
-    }
-
-    /// Đưa hàm stitch_collision về đúng cấu trúc của Area
-    pub fn stitch_collision(&mut self, reader: &MemoryReader, room: &Room) {
-        if room.collision_ptr == 0 {
-            return;
-        }
-
-        let width = room.width;
-        let height = room.height;
-        let total_tiles = (width * height) as usize;
-        let mut buffer = vec![0u16; total_tiles];
-        let bytes_to_read = total_tiles * 2;
-
-        if unsafe {
-            use std::os::unix::fs::FileExt;
-            reader
-                .mem_file
-                .read_exact_at(
-                    std::slice::from_raw_parts_mut(buffer.as_mut_ptr() as *mut u8, bytes_to_read),
-                    room.collision_ptr,
-                )
-                .is_ok()
-        } {
-            for row in 0..height {
-                for col in 0..width {
-                    let index = (row * width + col) as usize;
-                    let collision_value = buffer[index];
-                    let is_walkable = (collision_value & 0x01) == 0;
-
-                    let global_x = room.x + col;
-                    let global_y = room.y + row;
-
-                    self.grid.insert((global_x, global_y), is_walkable);
-                }
-            }
-        }
-    }
-
-    /// Đưa hàm khám phá đệ quy vào Area để giải quyết lỗi Borrow Checker
-    pub fn recursive_explore(
-        &mut self,
-        reader: &MemoryReader,
-        room_ptr: u64,
-        current_area_id: u32,
-    ) {
-        if room_ptr == 0 || self.scanned_rooms.contains(&room_ptr) {
-            return;
-        }
-
-        if let Some(room) = Room::from_reader(reader, room_ptr) {
-            // (Tùy chọn) Chống đi lạc: nếu room.area_id != current_area_id thì return;
-
-            self.stitch_collision(reader, &room);
-            self.scanned_rooms.insert(room_ptr);
-
-            let neighbors = room.get_neighbor_pointers(reader);
-            for n_ptr in neighbors {
-                self.recursive_explore(reader, n_ptr, current_area_id);
-            }
         }
     }
 
@@ -266,29 +166,69 @@ impl AreaManager {
         }
     }
 
-    /// Hàm cập nhật chính
-    pub fn update(&mut self, reader: &MemoryReader, player_unit_ptr: u64, current_area_id: u32) {
-        // Lấy con trỏ phòng hiện tại
-        let current_room_ptr = Self::get_current_room_ptr(reader, player_unit_ptr);
-
-        // Trích xuất area từ world_map
-        let area = self
-            .world_map
-            .get_or_create_area(current_area_id, "Unknown");
-
-        // Gọi hàm khám phá TRÊN ĐỐI TƯỢNG AREA
-        // Điều này tách biệt Area khỏi WorldMap, không bị mượn (borrow) lặp lại
-        area.recursive_explore(reader, current_room_ptr, current_area_id);
-    }
-
-    pub fn get_current_room_ptr(reader: &MemoryReader, player_unit_ptr: u64) -> u64 {
-        if player_unit_ptr == 0 {
-            return 0;
+    pub fn fetch_map_from_seed(&mut self, seed: u32, difficulty: u32, area_id: u32) -> Option<()> {
+        if self.world_map.areas.contains_key(&area_id) {
+            return Some(()); // Đã có map trong não, không cần gọi lại
         }
-        let path_ptr = reader.read_u64(player_unit_ptr + 0x38).unwrap_or(0);
-        if path_ptr == 0 {
-            return 0;
+
+        println!(
+            "[MAP-API] Đang gọi API lấy Map Area {} từ Seed {}...",
+            area_id, seed
+        );
+
+        let url = format!(
+            "http://localhost:5000/maps?mapid={}&area={}&difficulty={}",
+            seed, area_id, difficulty
+        );
+
+        let client = Client::new();
+        match client.get(&url).send() {
+            Ok(res) if res.status().is_success() => {
+                let json_text = res.text().unwrap_or_default();
+
+                // Parse chuỗi JSON khổng lồ thành Struct
+                if let Ok(map_data) = serde_json::from_str::<MapDataJSON>(&json_text) {
+                    let mut new_area = Area::new(area_id, "API_Map");
+
+                    let offset_x = map_data.level_origin.x;
+                    let offset_y = map_data.level_origin.y;
+
+                    let height = map_data.map_rows.len();
+                    let width = if height > 0 {
+                        map_data.map_rows[0].len()
+                    } else {
+                        0
+                    };
+
+                    // Duyệt qua từng ô của mảng 2D
+                    for (y, row) in map_data.map_rows.iter().enumerate() {
+                        for (x, &tile_val) in row.iter().enumerate() {
+                            // Bỏ qua hư vô
+                            if tile_val == -1 {
+                                continue;
+                            }
+
+                            // Giải mã vật lý: Số chẵn = Đi được (True), Số lẻ = Tường (False)
+                            let is_walkable = (tile_val % 2) == 0;
+
+                            // Tọa độ thực tế trong Game = Tọa độ Gốc + Chỉ số mảng
+                            let global_x = offset_x + (x as i32);
+                            let global_y = offset_y + (y as i32);
+
+                            new_area.grid.insert((global_x, global_y), is_walkable);
+                        }
+                    }
+
+                    self.world_map.areas.insert(area_id, new_area);
+                    println!("[MAP-API] Nạp thành công! Map {}x{} tiles.", width, height);
+                    return Some(());
+                } else {
+                    println!("[MAP-API] Lỗi Parse JSON! Định dạng trả về không khớp Struct.");
+                }
+            }
+            Ok(res) => println!("[MAP-API] HTTP Code: {}", res.status()),
+            Err(e) => println!("[MAP-API] Lỗi kết nối server: {}", e),
         }
-        reader.read_u64(path_ptr + 0x20).unwrap_or(0)
+        None
     }
 }
