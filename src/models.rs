@@ -245,6 +245,41 @@ impl Area {
             }
         }
     }
+
+    /// Máy hút bụi: Tìm mép sương mù gần nhân vật nhất
+    pub fn find_closest_frontier(&self, player_x: i32, player_y: i32) -> Option<(i32, i32)> {
+        let mut best_frontier = None;
+        let mut min_distance = i32::MAX;
+
+        let directions = [(0, 1), (1, 0), (0, -1), (-1, 0)];
+
+        // Duyệt qua toàn bộ các ô đã biết trong Area
+        for (&(x, y), &is_walkable) in &self.grid {
+            if !is_walkable { continue; } // Bỏ qua tường
+
+            // Kiểm tra xem ô đất trống này có nằm sát Sương Mù không
+            let mut is_frontier = false;
+            for &(dx, dy) in &directions {
+                let neighbor = (x + dx, y + dy);
+                // Nếu hàng xóm không tồn tại trong HashMap => Đó là sương mù chưa khám phá
+                if !self.grid.contains_key(&neighbor) {
+                    is_frontier = true;
+                    break;
+                }
+            }
+
+            if is_frontier {
+                // Tính khoảng cách từ Nhân vật đến Sương mù này
+                let dist = (x - player_x).abs() + (y - player_y).abs(); // Manhattan distance
+                if dist < min_distance {
+                    min_distance = dist;
+                    best_frontier = Some((x, y));
+                }
+            }
+        }
+
+        best_frontier
+    }
 }
 
 // ==========================================

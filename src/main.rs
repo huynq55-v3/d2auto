@@ -1,10 +1,12 @@
+mod astar;
 mod input;
 mod memory;
 mod models;
+mod scripting;
 
 use memory::{GameOffsets, MemoryReader, find_pid_by_name, get_wine_base_address};
-use models::PlayerInfo;
-use std::os::unix::fs::FileExt;
+use models::{AreaManager, GameTopology};
+use scripting::{BotEngine, ScriptParser};
 use std::thread;
 use std::time::Duration;
 
@@ -68,11 +70,8 @@ fn main() {
 
     // 6. Quét Game Offsets
     println!("Đang quét các Offset của Game từ bộ nhớ...");
-    println!(
-        "[*] Đang đọc {} MB RAM để quét Pattern...",
-        base_size / 1024 / 1024
-    );
     let mut module_buffer = vec![0u8; base_size];
+    use std::os::unix::fs::FileExt;
     if let Err(e) = reader.mem_file.read_exact_at(&mut module_buffer, base_addr) {
         println!("[-] Lỗi đọc RAM: {}", e);
         return;
@@ -86,20 +85,50 @@ fn main() {
     println!("    - UnitTable: 0x{:X}", offsets.unit_table);
     println!("    - PlayerUnitPtr: 0x{:X}", offsets.player_unit_ptr);
 
-    // 7. Game Loop
-    println!("[+] Bắt đầu Game Loop (Tick Rate: 30 FPS)...");
-    loop {
-        let players = PlayerInfo::get_local_players(&reader, base_addr, offsets.unit_table);
+    // 7. Khởi tạo Bot Components
+    let mut area_manager = AreaManager::new();
+    let topology = GameTopology::new();
+    let mut engine = BotEngine::new();
+    let parser = ScriptParser::new();
 
-        for player in players {
-            if player.x > 0 && player.y > 0 {
-                println!(
-                    "Nhân vật (ID: {}) đang đứng tại: X = {}, Y = {}",
-                    player.id, player.x, player.y
+    // Nạp script mặc định: Đến Den of Evil
+    let script = "go to den of evil";
+    let commands = parser.parse_script(script);
+    engine.load_script(commands);
+
+    // 8. Game Loop
+    println!("[+] Bắt đầu Game Loop (Bot Active)...");
+    loop {
+        // Đọc thông tin Player Unit hiện tại
+        let player_unit_ptr = offsets.player_unit_ptr;
+        if player_unit_ptr != 0 {
+            let path_ptr = reader.read_u64(player_unit_ptr + 0x38).unwrap_or(0);
+            if path_ptr != 0 {
+                let player_x = reader.read_u16(path_ptr + 0x02).unwrap_or(0) as i32;
+                let player_y = reader.read_u16(path_ptr + 0x06).unwrap_or(0) as i32;
+
+                // Lấy Area ID hiện tại
+                // Tạm thời lấy giá trị từ RAM (Cần offset chính xác, giả sử nằm trong Unit hoặc Act)
+                // Trong thực tế bạn cần offset AreaID từ Act hoặc player unit.
+                // Giả sử lấy từ AreaManager cập nhật.
+
+                // 1. ĐÔI MẮT: Hút bụi và vẽ map xung quanh nhân vật
+                let current_area_id = 1; // Mặc định là Rogue Encampment để test hoặc lấy từ RAM
+                area_manager.update(&reader, player_unit_ptr, current_area_id);
+
+                // 2. NÃO BỘ: Chạy State Machine để quyết định bước đi
+                engine.tick(
+                    &reader,
+                    &mut input,
+                    &mut area_manager,
+                    &topology,
+                    current_area_id,
+                    player_x,
+                    player_y,
                 );
             }
         }
 
-        thread::sleep(Duration::from_millis(33));
+        thread::sleep(Duration::from_millis(100)); // Sleep để chuột không giật lag
     }
 }

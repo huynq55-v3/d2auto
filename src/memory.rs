@@ -233,22 +233,35 @@ impl GameOffsets {
 
         let unit_table_base = base_address + self.unit_table;
 
-        // Trong D2R, index 0 của UnitTable là Player Hash Table (gồm 128 pointers)
-        // Chúng ta cần tìm Unit nào là nhân vật của mình.
-        // Cách đơn giản nhất cho bot đơn luồng là lấy Unit đầu tiên trong bảng băm của Players.
         for i in 0..128 {
             let mut unit_ptr = reader.read_u64(unit_table_base + (i * 8)).unwrap_or(0);
 
             while unit_ptr > 0 {
-                // Kiểm tra nếu là Player (Type 0)
                 let unit_type = reader.read_u32(unit_ptr).unwrap_or(99);
+
                 if unit_type == 0 {
-                    // Bạn có thể thêm logic kiểm tra UnitID hoặc Name ở đây
-                    // để đảm bảo đúng là nhân vật của bạn nếu chơi multiplayer
-                    self.player_unit_ptr = unit_ptr;
-                    return true;
+                    // --- ĐÃ THÊM LOGIC KIỂM TRA CHÉO (VALIDATION) ---
+
+                    // 1. Kiểm tra Class ID (Nằm ở offset 0x04 của Unit)
+                    let txt_file_no = reader.read_u32(unit_ptr + 0x04).unwrap_or(99);
+
+                    // 2. Kiểm tra Path Pointer (Nằm ở offset 0x38)
+                    let path_ptr = reader.read_u64(unit_ptr + 0x38).unwrap_or(0);
+
+                    // 3. Kiểm tra Inventory Pointer (Nằm ở offset 0x90)
+                    let inv_ptr = reader.read_u64(unit_ptr + 0x90).unwrap_or(0);
+
+                    // Điều kiện kiện kiên quyết để là 1 Player hợp lệ:
+                    // Class từ 0-6 VÀ phải có Path VÀ phải có Inventory
+                    if txt_file_no <= 6 && path_ptr > 0 && inv_ptr > 0 {
+                        println!("Path Pointer: 0x{:X}", path_ptr);
+                        println!("Unit Pointer: 0x{:X}", unit_ptr);
+                        self.player_unit_ptr = unit_ptr;
+                        return true;
+                    }
                 }
-                // Nhảy tới Unit tiếp theo trong Linked List (Offset 0x150)
+
+                // Nhảy tới Unit tiếp theo trong Linked List
                 unit_ptr = reader.read_u64(unit_ptr + 0x150).unwrap_or(0);
             }
         }
