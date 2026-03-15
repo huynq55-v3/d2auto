@@ -1,6 +1,6 @@
 use reqwest::blocking::Client;
-use serde::Deserialize;
-use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
+use std::collections::{HashMap, VecDeque};
 
 #[derive(Debug, Deserialize, Clone, Copy)]
 pub struct Point {
@@ -8,7 +8,12 @@ pub struct Point {
     pub y: i32,
 }
 
-// 1. Cấu trúc mới khớp 100% với JSON của D2 Map API
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+pub enum ExitType {
+    Object,   // Cổng, Hang (Cần click đích danh)
+    Boundary, // Ranh giới đất liền (Chạy xuyên qua)
+}
+
 #[derive(Debug, Deserialize, Clone)]
 #[serde(rename_all = "camelCase")]
 pub struct AdjacentLevel {
@@ -23,7 +28,6 @@ pub struct AdjacentLevel {
 pub struct MapDataJSON {
     pub level_origin: Point,
     pub map_rows: Vec<Vec<i32>>,
-    // Dùng HashMap<String, ...> vì key trong JSON là chuỗi ("1", "8", "3"...)
     #[serde(default)]
     pub adjacent_levels: HashMap<String, AdjacentLevel>,
 }
@@ -33,7 +37,8 @@ pub struct Area {
     pub name: String,
     pub origin: Point,
     pub grid: HashMap<(i32, i32), i32>,
-    pub exits: HashMap<u32, (i32, i32)>, // Lưu tọa độ cổng (Target ID -> x, y)
+    // Lưu: (X, Y, Loại, Vectơ_Pháp_Tuyến)
+    pub exits: HashMap<u32, (i32, i32, ExitType, (f32, f32))>,
 }
 
 impl Area {
@@ -64,12 +69,10 @@ impl WorldMap {
             "[MAP-API] Đang tải Map Area {} từ Seed {}...",
             area_id, seed
         );
-
         let url = format!(
             "http://localhost:5000/maps?mapid={}&area={}&difficulty={}",
             seed, area_id, difficulty
         );
-
         let client = Client::new();
         let response = client.get(&url).send().ok()?;
 
@@ -77,75 +80,132 @@ impl WorldMap {
             let map_data: MapDataJSON = response.json().ok()?;
             let mut area = Area::new(area_id, "API_Map", map_data.level_origin);
 
-            let offset_x = map_data.level_origin.x;
-            let offset_y = map_data.level_origin.y;
-
-            // 1. Nạp Grid (bản đồ vật cản)
+            // 1. Nạp Grid
             for (y, row) in map_data.map_rows.iter().enumerate() {
                 for (x, &tile_val) in row.iter().enumerate() {
                     if tile_val == -1 {
                         continue;
                     }
-                    let global_x = offset_x + (x as i32);
-                    let global_y = offset_y + (y as i32);
-                    area.grid.insert((global_x, global_y), tile_val);
+                    area.grid.insert(
+                        (
+                            map_data.level_origin.x + x as i32,
+                            map_data.level_origin.y + y as i32,
+                        ),
+                        tile_val,
+                    );
                 }
             }
 
-            // 2. Nạp Lối đi (Exits) - XỬ LÝ CHUẨN TỪ JSON!
+            // 2. Nạp Lối đi
             for (target_id_str, level_info) in map_data.adjacent_levels {
-                // Ép kiểu String ("8") về số u32 (8)
                 if let Ok(target_id) = target_id_str.parse::<u32>() {
-                    // Trong JSON, mảng exits có thể rỗng hoặc có nhiều điểm trùng nhau.
-                    // Chúng ta chỉ cần lấy điểm ĐẦU TIÊN làm tọa độ click.
+                    // Tính Vectơ pháp tuyến chuẩn (Hướng từ Map hiện tại sang Map mới)
+                    let raw_dx = (level_info.level_origin.x - area.origin.x) as f32;
+                    let raw_dy = (level_info.level_origin.y - area.origin.y) as f32;
+                    let mag = (raw_dx * raw_dx + raw_dy * raw_dy).sqrt();
+                    let normal = if mag > 0.0 {
+                        let nx = raw_dx / mag;
+                        let ny = raw_dy / mag;
+                        // Làm tròn để đâm vuông góc (N, S, E, W)
+                        if nx.abs() > ny.abs() {
+                            (nx.signum(), 0.0)
+                        } else {
+                            (0.0, ny.signum())
+                        }
+                    } else {
+                        (1.0, 0.0)
+                    };
+
                     if let Some(first_exit) = level_info.exits.first() {
-                        area.exits.insert(target_id, (first_exit.x, first_exit.y));
-                        println!(
-                            "[MAP-API] Tìm thấy cửa sang Area {} tại tọa độ ({}, {})",
-                            target_id, first_exit.x, first_exit.y
+                        area.exits.insert(
+                            target_id,
+                            (first_exit.x, first_exit.y, ExitType::Object, normal),
                         );
+                    } else {
+                        // FALLBACK: Tính vùng giao trung bình cộng cho Boundary
+                        let mut pts = Vec::new();
+                        for (&(x, y), &val) in &area.grid {
+                            if val % 2 == 0
+                                && x >= level_info.level_origin.x - 2
+                                && x <= level_info.level_origin.x + level_info.width + 2
+                                && y >= level_info.level_origin.y - 2
+                                && y <= level_info.level_origin.y + level_info.height + 2
+                            {
+                                pts.push((x, y));
+                            }
+                        }
+                        if !pts.is_empty() {
+                            let count = pts.len() as i32;
+                            let cx = pts.iter().map(|p| p.0).sum::<i32>() / count;
+                            let cy = pts.iter().map(|p| p.1).sum::<i32>() / count;
+                            area.exits
+                                .insert(target_id, (cx, cy, ExitType::Boundary, normal));
+                        }
                     }
                 }
             }
-
             self.areas.insert(area_id, area);
-            println!("[MAP-API] Nạp thành công Area {}.", area_id);
             return Some(());
         }
         None
     }
 
-    /// Trả về trực tiếp tọa độ của cổng dịch chuyển
     pub fn find_exit_position(
         &self,
-        current_area_id: u32,
-        target_area_id: u32,
-    ) -> Option<(i32, i32)> {
-        if let Some(area) = self.areas.get(&current_area_id) {
-            if let Some(&pos) = area.exits.get(&target_area_id) {
-                return Some(pos);
+        cur_id: u32,
+        target_id: u32,
+    ) -> Option<(i32, i32, ExitType, (f32, f32))> {
+        self.areas.get(&cur_id)?.exits.get(&target_id).copied()
+    }
+
+    pub fn get_astar_grid(&self, area_id: u32) -> HashMap<(i32, i32), bool> {
+        let mut g = HashMap::new();
+        if let Some(area) = self.areas.get(&area_id) {
+            for (&pos, &val) in &area.grid {
+                g.insert(pos, val % 2 == 0);
+            }
+            for ex in area.exits.values() {
+                g.insert((ex.0, ex.1), true);
+            }
+        }
+        g
+    }
+}
+
+pub struct GameTopology {
+    pub connections: HashMap<u32, Vec<u32>>,
+}
+impl GameTopology {
+    pub fn new() -> Self {
+        let mut t = HashMap::new();
+        t.insert(1, vec![2]);
+        t.insert(2, vec![1, 3, 8]);
+        t.insert(3, vec![2, 4, 17]);
+        t.insert(8, vec![2]);
+        Self { connections: t }
+    }
+    pub fn get_macro_route(&self, start: u32, target: u32) -> Option<Vec<u32>> {
+        let mut q = VecDeque::from([start]);
+        let mut visited = HashMap::from([(start, start)]);
+        while let Some(curr) = q.pop_front() {
+            if curr == target {
+                let (mut r, mut n) = (vec![target], target);
+                while n != start {
+                    n = *visited.get(&n)?;
+                    r.push(n);
+                }
+                r.reverse();
+                return Some(r);
+            }
+            if let Some(neighbors) = self.connections.get(&curr) {
+                for &nb in neighbors {
+                    if !visited.contains_key(&nb) {
+                        visited.insert(nb, curr);
+                        q.push_back(nb);
+                    }
+                }
             }
         }
         None
-    }
-
-    /// Chuyển đổi thành Grid để A* tìm đường
-    pub fn get_astar_grid(&self, area_id: u32) -> HashMap<(i32, i32), bool> {
-        let mut grid_for_astar = HashMap::new();
-
-        if let Some(area) = self.areas.get(&area_id) {
-            for (&(x, y), &tile_val) in &area.grid {
-                // LOGIC CHUẨN: Chỉ quan tâm chẵn (đi được) và lẻ (tường)
-                let is_walkable = tile_val % 2 == 0;
-                grid_for_astar.insert((x, y), is_walkable);
-            }
-
-            // MẸO CỦA BOT: Điểm cửa (Exit) thường bị kẹt vào tường (is_walkable = false).
-            // Ta bắt buộc gán nó bằng True để A* có thể chạm tới sát mép cửa!
-            for &exit_pos in area.exits.values() {
-                grid_for_astar.insert(exit_pos, true);
-            }
-        }
-        grid_for_astar
     }
 }

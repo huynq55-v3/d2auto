@@ -66,7 +66,7 @@ impl InputController {
         let real_y = y + title_bar_top;
 
         let commands = format!(
-            "mousemove --window {} {} {}\nsleep 0.03\nclick --window {} {}\n",
+            "mousemove --window {} {} {}\nsleep 0.01\nclick --window {} {}\n",
             self.window_id, real_x, real_y, self.window_id, btn
         );
 
