@@ -1,7 +1,9 @@
 use std::convert::TryInto;
 use std::fs::File;
 use std::io::{BufRead, Read, Seek, SeekFrom};
-use std::os::unix::fs::FileExt; // Cực kỳ quan trọng để đọc file tối ưu trên Linux
+use std::os::unix::fs::FileExt;
+
+use crate::models::MonsterData; // Cực kỳ quan trọng để đọc file tối ưu trên Linux
 
 /// Find PID by searching /proc/[pid]/comm and /proc/[pid]/cmdline
 pub fn find_pid_by_name(target_name: &str) -> Option<i32> {
@@ -182,6 +184,64 @@ impl MemoryReader {
         // Area ID (Level No) nằm ở offset 0x1F8 của pLevel
         self.read_u32(level_ptr + 0x1F8).unwrap_or(0)
     }
+
+    /// Quét bảng UnitTable để lấy toàn bộ danh sách Quái vật/NPC đang tồn tại trong RAM
+    pub fn get_all_monsters(&self, base_address: u64, unit_table_offset: u64) -> Vec<MonsterData> {
+        let mut monsters = Vec::new();
+
+        if unit_table_offset == 0 {
+            return monsters;
+        }
+
+        // Type 1 (Monster) bắt đầu sau 1024 bytes (1 * 128 * 8) từ gốc UnitTable
+        let monster_table_start = base_address + unit_table_offset + 1024;
+
+        for i in 0..128 {
+            let mut unit_ptr = self.read_u64(monster_table_start + (i * 8)).unwrap_or(0);
+
+            while unit_ptr > 0 {
+                // 1. Kiểm tra cờ Xác chết (Corpse) ở offset 0x1AE
+                let is_corpse = self.read::<u8>(unit_ptr + 0x1AE).unwrap_or(0);
+
+                // Nếu là xác chết -> Bỏ qua, chỉ đọc con trỏ Next (0x158) để đi tiếp
+                if is_corpse != 0 {
+                    unit_ptr = self.read_u64(unit_ptr + 0x158).unwrap_or(0);
+                    continue;
+                }
+
+                let txt_file_no = self.read_u32(unit_ptr + 0x04).unwrap_or(0);
+                let unit_id = self.read_u32(unit_ptr + 0x08).unwrap_or(0);
+                let mode = self.read_u32(unit_ptr + 0x0C).unwrap_or(0);
+
+                let path_ptr = self.read_u64(unit_ptr + 0x38).unwrap_or(0);
+                let mut x = 0;
+                let mut y = 0;
+
+                if path_ptr > 0 {
+                    // D2go chỉ đọc tọa độ tĩnh ở 0x02 và 0x06
+                    x = self.read_u16(path_ptr + 0x02).unwrap_or(0);
+                    y = self.read_u16(path_ptr + 0x06).unwrap_or(0);
+                }
+
+                // (Tùy chọn) Lọc bớt các NPC vô hại như Gà, Chuột, Lửa, Trap...
+                // Ở đây ta cứ lấy hết, lát nữa lúc code AI ta sẽ lọc bằng txt_file_no sau
+
+                monsters.push(MonsterData {
+                    unit_id,
+                    class_id: txt_file_no,
+                    mode,
+                    x,
+                    y,
+                    ptr: unit_ptr,
+                });
+
+                // VÁ LỖI CHÍ MẠNG: Con trỏ tới Unit tiếp theo nằm ở 0x158
+                unit_ptr = self.read_u64(unit_ptr + 0x158).unwrap_or(0);
+            }
+        }
+
+        monsters
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -276,7 +336,7 @@ impl GameOffsets {
                 }
 
                 // Nhảy tới Unit tiếp theo trong Linked List
-                unit_ptr = reader.read_u64(unit_ptr + 0x150).unwrap_or(0);
+                unit_ptr = reader.read_u64(unit_ptr + 0x158).unwrap_or(0);
             }
         }
         false

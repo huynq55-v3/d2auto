@@ -2,6 +2,7 @@ mod astar;
 mod input;
 mod map;
 mod memory;
+mod models;
 mod moving;
 
 use crate::map::WorldMap;
@@ -93,44 +94,23 @@ fn main() {
         main_thread_was_enabled = currently_enabled;
 
         if currently_enabled {
-            let player_ptr = offsets.player_unit_ptr;
-            let path_ptr = reader.read_u64(player_ptr + 0x38).unwrap_or(0);
+            // Giả sử bạn đang ở main loop, đã có base_address và offsets
+            let all_monsters = reader.get_all_monsters(base_addr, offsets.unit_table);
 
-            if path_ptr != 0 {
-                let p_x = reader.read_u16(path_ptr + 0x02).unwrap_or(0) as i32;
-                let p_y = reader.read_u16(path_ptr + 0x06).unwrap_or(0) as i32;
-
-                println!("{} {}", p_x, p_y);
-
-                // TẨY NÃO KHI SANG MAP MỚI
-                let current_area_id = reader.read_current_area_id(player_ptr);
-                if current_area_id != 0 && current_area_id != last_area_id {
-                    if last_area_id != 0 {
-                        println!(
-                            "\x1b[33m[EVENT] Đã sang Map Mới ({} -> {}). Xóa đường A* cũ!\x1b[0m",
-                            last_area_id, current_area_id
-                        );
-                        current_path.clear();
-                    }
-                    last_area_id = current_area_id;
+            let mut alive_count = 0;
+            for m in &all_monsters {
+                // Mode 0 và 12 trong D2R thường là trạng thái Đã Chết (Corpse) / Đang Ngã Xuống
+                // (Lưu ý: Bạn có thể cần đối chiếu chính xác bảng Mode của D2R sau này)
+                if m.mode != 0 && m.mode != 12 {
+                    alive_count += 1;
+                    // println!("Quái sống ID: {} | Class: {} | Tọa độ: ({}, {})", m.unit_id, m.class_id, m.x, m.y);
                 }
-
-                moving::move_to_act(
-                    target_area,
-                    player_ptr,
-                    p_x,
-                    p_y,
-                    &reader,
-                    &topology,
-                    &mut world_map,
-                    &mut current_path,
-                    center_x,
-                    center_y,
-                    &mut input,
-                    seed,
-                    difficulty,
-                );
             }
+            println!(
+                "[RADAR] Quét thấy {} con quái ({} con còn sống)",
+                all_monsters.len(),
+                alive_count
+            );
         }
 
         // Tốc độ nhả lệnh chuẩn 150ms để xdotool tiêu hóa kịp, chống chuột ma
