@@ -35,15 +35,14 @@ pub fn find_path(
     g_score.insert(start, 0);
 
     let heuristic = |p: (i32, i32), g: (i32, i32)| -> i32 {
-        let dx = (p.0 - g.0).abs();
-        let dy = (p.1 - g.1).abs();
+        let dx = (p.0 - g.0) as f32;
+        let dy = (p.1 - g.1) as f32;
 
-        // Nếu đi chéo, chi phí là 14. Nếu đi thẳng, chi phí là 10.
-        if dx > dy {
-            (dx - dy) * 10 + dy * 14
-        } else {
-            (dy - dx) * 10 + dx * 14
-        }
+        // Tính Euclidean distance: Căn bậc 2 của tổng bình phương 2 cạnh
+        let distance = (dx * dx + dy * dy).sqrt();
+
+        // Nhân 10 rồi ép về i32 để giữ độ chính xác và đồng bộ hệ số với G-cost
+        (distance * 10.0) as i32
     };
 
     open_set.push(State {
