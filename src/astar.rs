@@ -34,8 +34,17 @@ pub fn find_path(
 
     g_score.insert(start, 0);
 
-    let heuristic =
-        |p: (i32, i32), g: (i32, i32)| -> i32 { (p.0 - g.0).abs().max((p.1 - g.1).abs()) * 10 };
+    let heuristic = |p: (i32, i32), g: (i32, i32)| -> i32 {
+        let dx = (p.0 - g.0).abs();
+        let dy = (p.1 - g.1).abs();
+
+        // Nếu đi chéo, chi phí là 14. Nếu đi thẳng, chi phí là 10.
+        if dx > dy {
+            (dx - dy) * 10 + dy * 14
+        } else {
+            (dy - dx) * 10 + dx * 14
+        }
+    };
 
     open_set.push(State {
         cost: heuristic(start, goal),

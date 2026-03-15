@@ -55,9 +55,19 @@ impl InputController {
 
     pub fn click_at(&mut self, x: i32, y: i32, button: MouseButton) -> Result<(), Box<dyn Error>> {
         let btn = button as u8;
+
+        // --- BÙ TRỪ WINDOW DECORATIONS CỦA LINUX ---
+        // x, y được truyền vào là tọa độ tinh khiết của Game (1280x720)
+        // Lệnh xdotool --window sẽ lấy mốc (0,0) bao gồm cả khung viền cửa sổ của OS.
+        let border_left = 6;
+        let title_bar_top = 32;
+
+        let real_x = x + border_left;
+        let real_y = y + title_bar_top;
+
         let commands = format!(
             "mousemove --window {} {} {}\nsleep 0.03\nclick --window {} {}\n",
-            self.window_id, x, y, self.window_id, btn
+            self.window_id, real_x, real_y, self.window_id, btn
         );
 
         self.xdotool_stdin.write_all(commands.as_bytes())?;
