@@ -1,6 +1,7 @@
 mod astar;
 mod input;
 mod map;
+mod map_seed;
 mod memory;
 mod models;
 mod moving;
@@ -70,7 +71,9 @@ fn main() {
 
     println!("[+] Bot đã sẵn sàng. Bấm F7 ở bất kỳ đâu để bắt đầu.");
 
-    let seed = 1234567;
+    let seed = reader.read_map_seed(offsets.player_unit_ptr).unwrap_or(0);
+    println!("[MAP] Map Seed: {}", seed);
+
     let difficulty = 0;
     let target_area = 8; // Đích đến: Den of Evil
 
@@ -111,6 +114,45 @@ fn main() {
                 all_monsters.len(),
                 alive_count
             );
+
+            let player_ptr = offsets.player_unit_ptr;
+            let path_ptr = reader.read_u64(player_ptr + 0x38).unwrap_or(0);
+
+            if path_ptr != 0 {
+                let p_x = reader.read_u16(path_ptr + 0x02).unwrap_or(0) as i32;
+                let p_y = reader.read_u16(path_ptr + 0x06).unwrap_or(0) as i32;
+
+                println!("{} {}", p_x, p_y);
+
+                // TẨY NÃO KHI SANG MAP MỚI
+                let current_area_id = reader.read_current_area_id(player_ptr);
+                if current_area_id != 0 && current_area_id != last_area_id {
+                    if last_area_id != 0 {
+                        println!(
+                            "\x1b[33m[EVENT] Đã sang Map Mới ({} -> {}). Xóa đường A* cũ!\x1b[0m",
+                            last_area_id, current_area_id
+                        );
+                        current_path.clear();
+                    }
+                    last_area_id = current_area_id;
+                }
+
+                moving::move_to_act(
+                    target_area,
+                    player_ptr,
+                    p_x,
+                    p_y,
+                    &reader,
+                    &topology,
+                    &mut world_map,
+                    &mut current_path,
+                    center_x,
+                    center_y,
+                    &mut input,
+                    seed,
+                    difficulty,
+                );
+            }
         }
 
         // Tốc độ nhả lệnh chuẩn 150ms để xdotool tiêu hóa kịp, chống chuột ma

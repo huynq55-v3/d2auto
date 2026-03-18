@@ -3,6 +3,7 @@ use std::fs::File;
 use std::io::{BufRead, Read, Seek, SeekFrom};
 use std::os::unix::fs::FileExt;
 
+use crate::map_seed::get_map_seed_from_hash;
 use crate::models::MonsterData; // Cực kỳ quan trọng để đọc file tối ưu trên Linux
 
 /// Find PID by searching /proc/[pid]/comm and /proc/[pid]/cmdline
@@ -241,6 +242,128 @@ impl MemoryReader {
         }
 
         monsters
+    }
+
+    /// Trích xuất Map Seed từ RAM thông qua việc giải mã Hash (Hoạt động cho cả Online và Offline)
+    pub fn read_map_seed(&self, player_unit_ptr: u64) -> Option<u32> {
+        // 1. Từ Player Unit (0x20) trỏ tới cấu trúc Act
+        let p_act = self.read_u64(player_unit_ptr + 0x20)?;
+
+        // 2. Từ Act (0x78) trỏ tới cấu trúc ActMisc
+        let p_act_misc = self.read_u64(p_act + 0x70)?;
+
+        // 3. Đọc 2 giá trị Hash đã bị mã hóa
+        let init_seed_hash = self.read_u32(p_act_misc + 0x838)?;
+        let end_seed_hash = self.read_u32(p_act_misc + 0x860)?;
+
+        println!("player_unit_ptr: {:x}", player_unit_ptr);
+        println!("p_act: {:x}", p_act);
+        println!("p_act_misc: {:x}", p_act_misc);
+        println!("init: {}", init_seed_hash);
+        println!("end: {}", end_seed_hash);
+
+        // 4. Giải mã Hash để lấy Map Seed 32-bit gốc
+        get_map_seed_from_hash(init_seed_hash, end_seed_hash)
+    }
+
+    pub fn find_correct_act_misc_offset(&self, player_unit_ptr: u64) {
+        println!("\x1b[33m--- BẮT ĐẦU QUÉT OFFSET ACT_MISC ---\x1b[0m");
+
+        // 1. Lấy p_act (Thường ổn định ở 0x20)
+        let p_act = match self.read_u64(player_unit_ptr + 0x20) {
+            Some(ptr) if ptr > 0 => ptr,
+            _ => {
+                println!("[!] Không tìm thấy p_act tại offset 0x20");
+                return;
+            }
+        };
+
+        println!("[DEBUG] p_act found at: {:x}", p_act);
+
+        // 2. Quét dải offset từ 0x00 đến 0x300 (mỗi bước 8 bytes cho con trỏ 64-bit)
+        for offset in (0..0x300).step_by(8) {
+            if let Some(potential_p_act_misc) = self.read_u64(p_act + offset) {
+                // Loại bỏ các địa chỉ tĩnh hoặc rác (như 0x1400... mà bạn gặp)
+                // ActMisc thật phải nằm trong vùng Heap động (thường là địa chỉ lớn hoặc nhỏ hơn hẳn vùng module base)
+                if potential_p_act_misc == 0
+                    || (potential_p_act_misc >= 0x140000000 && potential_p_act_misc <= 0x150000000)
+                {
+                    continue;
+                }
+
+                // Thử đọc Hash1 và Hash2 dựa trên cấu trúc d2go/koolo
+                // Offset Hash1: 0x840, Hash2: 0x868
+                if let (Some(init_hash), Some(end_hash)) = (
+                    self.read_u32(potential_p_act_misc + 0x840),
+                    self.read_u32(potential_p_act_misc + 0x868),
+                ) {
+                    // Nếu đọc ra 0 cả hai thì khả năng cao là sai chỗ
+                    if init_hash == 0 && end_hash == 0 {
+                        continue;
+                    }
+
+                    // Thử bẻ khóa thử xem có ra Seed không
+                    if let Some(seed) = get_map_seed_from_hash(init_hash, end_hash) {
+                        println!(
+                            "\x1b[32m[FOUND!] Tìm thấy Offset khả thi: 0x{:x}\x1b[0m",
+                            offset
+                        );
+                        println!("   -> p_act_misc: {:x}", potential_p_act_misc);
+                        println!("   -> Map Seed: {}", seed);
+                        println!("   -> InitHash: {}, EndHash: {}", init_hash, end_hash);
+                        println!("-------------------------------------------");
+                    }
+                }
+            }
+        }
+        println!("\x1b[33m--- KẾT THÚC QUÉT ---\x1b[0m");
+    }
+
+    pub fn deep_scan_act_misc(&self, player_unit_ptr: u64, target_seed: u32) {
+        // 1. Tính toán Hash mà chúng ta đang đi tìm
+        let target_end_hash = target_seed.wrapping_mul(0x6AC690C5).wrapping_add(666);
+        println!("\x1b[33m--- DEEP SCAN ACT_MISC ---\x1b[0m");
+        println!(
+            "[INFO] Đang tìm EndHash: {} (tương ứng Seed {})",
+            target_end_hash, target_seed
+        );
+
+        let p_act = self.read_u64(player_unit_ptr + 0x20).unwrap_or(0);
+        if p_act == 0 {
+            return;
+        }
+
+        // Quét qua các pointer khả nghi trong Act (0x70, 0x78, 0x80...)
+        for act_offset in [0x70, 0x78, 0x80] {
+            if let Some(p_act_misc) = self.read_u64(p_act + act_offset) {
+                if p_act_misc == 0 || p_act_misc > 0x00007FFFFFFFFFFF {
+                    continue;
+                }
+
+                // Quét sâu vào bên trong ActMisc (tầm 2000 bytes) để tìm target_end_hash
+                for internal_offset in (0..0xA00).step_by(4) {
+                    if let Some(val) = self.read_u32(p_act_misc + internal_offset) {
+                        if val == target_end_hash {
+                            println!("\x1b[32m[BINGO!] Đã tìm thấy vị trí chuẩn:\x1b[0m");
+                            println!("   -> act_ptr + 0x{:x} (p_act_misc)", act_offset);
+                            println!("   -> act_misc + 0x{:x} (EndHashOffset)", internal_offset);
+
+                            // Thông thường InitHash nằm cách EndHash -0x28 (40 bytes)
+                            let potential_init_offset = internal_offset - 0x28;
+                            if let Some(init_val) =
+                                self.read_u32(p_act_misc + potential_init_offset as u64)
+                            {
+                                println!(
+                                    "   -> act_misc + 0x{:x} (InitHashOffset): val={}",
+                                    potential_init_offset, init_val
+                                );
+                            }
+                            println!("-------------------------------------------");
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
